@@ -1,0 +1,388 @@
+// Scope EVERYTHING to this one form only.
+form.gc-upload-start-form {
+  // -----------------------------
+  // TUNING KNOBS (desktop)
+  // -----------------------------
+  $label-col: 2.75rem;   // left label column (tightened)
+  $hole-col: 3.05rem;    // each hole column
+  $total-col: 3.50rem;   // Out / In column
+  $field-w: 2.75rem;     // unified width for ALL inputs + selects
+  $field-h: 1.85rem;     // unified height for ALL inputs + selects
+
+  // -----------------------------
+  // Header / info
+  // -----------------------------
+  .gc-upload-loaded {
+    margin-bottom: .75rem;
+    font-size: .95rem;
+    opacity: .9;
+  }
+
+  .gc-upload-scorecard {
+    margin-top: .5rem;
+  }
+
+  .gc-upload-scores-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem 1.25rem;
+    padding: .75rem 1rem;
+    margin-bottom: .75rem;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: .75rem;
+    background: rgba(255,255,255,.03);
+
+    span {
+      display: inline-flex;
+      gap: .35rem;
+      align-items: baseline;
+    }
+  }
+
+  // -----------------------------
+  // Table wrappers
+  // -----------------------------
+  .table-responsive {
+    border-radius: .75rem;
+    border: 1px solid rgba(255,255,255,.10);
+    overflow: auto; // allow scroll (needed for wide scorecard)
+    margin-bottom: 1rem;
+    background: rgba(0,0,0,.15);
+
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  // IMPORTANT: totals table should NOT behave like the wide scorecard tables.
+  // This removes the horizontal snap/scroll behavior from the totals wrapper
+  // (and prevents the "Gross Score" box from getting a scrollbar).
+  .table-responsive:has(> table[data-drupal-selector="edit-total"]) {
+    overflow-x: hidden;
+    scroll-snap-type: none;
+  }
+
+  // -----------------------------
+  // Scorecard tables (front/back)
+  // -----------------------------
+  table.scorecard-table-input {
+    width: 100%;
+    margin: 0;
+    table-layout: fixed; // critical for consistent columns
+    border-collapse: separate;
+    border-spacing: 0;
+
+    // make cells snap-scroll nicely (ONLY affects the wide tables)
+    th,
+    td {
+      scroll-snap-align: start;
+    }
+
+    // tighten bootstrap padding variables
+    --bs-table-cell-padding-x: .20rem;
+    --bs-table-cell-padding-y: .30rem;
+
+    // Kill default bootstrap hover/striped intensity on dark backgrounds
+    &.table-hover > tbody > tr:hover > * {
+      background: rgba(255,255,255,.04);
+    }
+    &.table-striped > tbody > tr:nth-of-type(odd) > * {
+      background: rgba(255,255,255,.02);
+    }
+
+    // ---- Header ----
+    thead th {
+      font-weight: 800;
+      letter-spacing: .01em;
+      white-space: nowrap;
+      text-align: center;
+      padding: .45rem .20rem;
+      border-bottom: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.04);
+
+      position: sticky;
+      top: 0;
+      z-index: 4;
+
+      &:first-child {
+        text-align: left;
+        padding-left: .55rem;
+      }
+    }
+
+    // ---- Body ----
+    tbody td {
+      vertical-align: middle;
+      text-align: center;
+      padding: .35rem .20rem;
+      border-top: 1px solid rgba(255,255,255,.08);
+      white-space: nowrap;
+    }
+
+    // ---- Column widths (front/back tables) ----
+    &:not([data-drupal-selector="edit-total"]) {
+      thead th:first-child,
+      tbody td:first-child {
+        width: $label-col;
+        min-width: $label-col;
+        max-width: $label-col;
+
+        text-align: left;
+        padding-left: .55rem;
+        font-weight: 800;
+        opacity: .95;
+
+        position: sticky;
+        left: 0;
+        z-index: 3;
+        background: rgba(0,0,0,.30);
+        backdrop-filter: blur(6px);
+      }
+
+      // Hole columns (everything except first + last)
+      thead th:nth-child(n + 2):not(:last-child),
+      tbody td:nth-child(n + 2):not(:last-child) {
+        width: $hole-col;
+        min-width: $hole-col;
+        max-width: $hole-col;
+      }
+
+      // Out / In column
+      thead th:last-child,
+      tbody td:last-child {
+        width: $total-col;
+        min-width: $total-col;
+        max-width: $total-col;
+
+        font-weight: 900;
+        background: rgba(255,255,255,.04);
+      }
+    }
+
+    // If a cell contains a form item wrapper, center it properly
+    td .js-form-item,
+    td .form-item {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0 !important;
+    }
+
+    // Center checkbox wrappers too
+    td .form-check {
+      padding-left: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0 !important;
+      min-height: $field-h;
+    }
+
+    // HARD CENTER the actual checkbox input (Bootstrap sometimes adds left margin)
+    td .form-check-input {
+      margin: 0 !important;
+      float: none !important;
+    }
+  }
+
+  // -----------------------------
+  // Inputs / selects: FORCE SAME SIZE + PERFECT CENTERING
+  // -----------------------------
+  .gc-upload-score-input,
+  .gc-upload-putts-input,
+  .gc-upload-penalty-input,
+  .gc-upload-fir-input {
+    width: $field-w !important;
+    min-width: $field-w !important;
+    max-width: $field-w !important;
+
+    height: $field-h !important;
+    min-height: $field-h !important;
+
+    line-height: $field-h !important;
+
+    text-align: center !important;
+    font-weight: 800;
+
+    border-radius: .55rem;
+
+    display: block;
+    margin: 0 auto;
+  }
+
+  .gc-upload-score-input,
+  .gc-upload-putts-input,
+  .gc-upload-penalty-input {
+    font-size: .95rem;
+  }
+
+  .gc-upload-score-input {
+    font-size: 1rem;
+    font-weight: 900;
+  }
+
+  // FIR select: remove padding differences + tame arrow
+  .gc-upload-fir-input {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+
+    background-position: right .35rem center !important;
+
+    text-align-last: center;
+  }
+
+  // Checkboxes: keep size but truly centered
+  .gc-upload-updown-input,
+  .gc-upload-sandsave-input {
+    transform: scale(1.05);
+    margin: 0 !important;
+  }
+
+  // -----------------------------
+  // Totals table FIX (Gross Score box)
+  // -----------------------------
+  table[data-drupal-selector="edit-total"] {
+    // Reset any "scorecard" assumptions
+    table-layout: auto;
+    width: 100%;
+
+    th,
+    td {
+      scroll-snap-align: unset;
+      white-space: nowrap;
+    }
+
+    // Unstick anything on totals
+    thead th,
+    tbody td {
+      position: static;
+    }
+
+    thead th:first-child,
+    tbody td:first-child {
+      width: auto;
+      min-width: 0;
+      max-width: none;
+
+      background: transparent;
+      backdrop-filter: none;
+      padding-left: .85rem;
+      font-weight: 900;
+    }
+
+    tbody td:first-child {
+      font-size: 1.05rem;
+      font-weight: 900;
+    }
+  }
+
+  // -----------------------------
+  // Post Score Details panel
+  // -----------------------------
+  #gc-upload-post-fields-wrapper details {
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: .75rem;
+    background: rgba(255,255,255,.02);
+    padding: .5rem .75rem;
+
+    summary {
+      cursor: pointer;
+      font-weight: 800;
+      padding: .35rem 0;
+    }
+
+    .details-wrapper {
+      padding-top: .5rem;
+    }
+  }
+
+  // -----------------------------
+  // Buttons
+  // -----------------------------
+  .form-actions .btn {
+    border-radius: .65rem;
+    padding: .55rem 1rem;
+    font-weight: 800;
+  }
+
+  // -----------------------------
+  // MOBILE (tighter)
+  // -----------------------------
+  @media (max-width: 768px) {
+    $label-col: 3.10rem;
+    $hole-col: 2.75rem;
+    $total-col: 3.05rem;
+    $field-w: 2.45rem;
+    $field-h: 1.70rem;
+
+    table.scorecard-table-input {
+      --bs-table-cell-padding-x: .14rem;
+      --bs-table-cell-padding-y: .22rem;
+
+      thead th {
+        padding: .38rem .14rem;
+        font-size: .90rem;
+      }
+
+      tbody td {
+        padding: .28rem .14rem;
+        font-size: .90rem;
+      }
+
+      // Only apply fixed widths to non-totals tables
+      &:not([data-drupal-selector="edit-total"]) {
+        thead th:first-child,
+        tbody td:first-child {
+          width: $label-col;
+          min-width: $label-col;
+          max-width: $label-col;
+          padding-left: .45rem;
+        }
+
+        thead th:nth-child(n + 2):not(:last-child),
+        tbody td:nth-child(n + 2):not(:last-child) {
+          width: $hole-col;
+          min-width: $hole-col;
+          max-width: $hole-col;
+        }
+
+        thead th:last-child,
+        tbody td:last-child {
+          width: $total-col;
+          min-width: $total-col;
+          max-width: $total-col;
+        }
+      }
+
+      td .form-check {
+        min-height: $field-h;
+      }
+
+      td .form-check-input {
+        margin: 0 !important;
+      }
+    }
+
+    .gc-upload-score-input,
+    .gc-upload-putts-input,
+    .gc-upload-penalty-input,
+    .gc-upload-fir-input {
+      width: $field-w !important;
+      min-width: $field-w !important;
+      max-width: $field-w !important;
+      height: $field-h !important;
+      min-height: $field-h !important;
+
+      line-height: $field-h !important;
+      font-size: .90rem;
+    }
+
+    .gc-upload-score-input {
+      font-size: .95rem;
+    }
+  }
+}
+
+.gc-upload-fir-input {
+  padding: 0 !important;
+}
