@@ -182,7 +182,9 @@ class GcUploadScorecardBuilder {
     if ($par_i === NULL || $gross_i === NULL || $putts_i === NULL) {
       return FALSE;
     }
-    return ($putts_i === 1) && ($gross_i <= $par_i);
+
+    // ONLY par with 1 putt.
+    return ($putts_i === 1) && ($gross_i === $par_i);
   }
 
   /**

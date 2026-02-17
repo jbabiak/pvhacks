@@ -706,9 +706,13 @@ class GcUploadStartForm extends FormBase {
         '#markup' => '<div class="gc-upload-loaded"><strong>Loaded round:</strong> ' . (int) $loaded_round_id . '</div>',
       ];
 
+      // IMPORTANT: give this wrapper an ID so we can AJAX refresh scorecard + post fields together.
       $section['loaded_wrap'] = [
         '#type' => 'container',
-        '#attributes' => ['class' => ['gc-upload-scorecard']],
+        '#attributes' => [
+          'id' => 'gc-upload-loaded-wrap',
+          'class' => ['gc-upload-scorecard'],
+        ],
       ];
 
       try {
@@ -757,9 +761,10 @@ class GcUploadStartForm extends FormBase {
           '#default_value' => (string) ($form_state->getValue('club') ?? $form_state->getValue('grint_facility_name') ?? ''),
           '#autocomplete_route_name' => 'gc_api.facility_autocomplete',
           '#description' => $this->t('Start typing the club name.'),
+          // UPDATED: refresh the whole loaded_wrap so scorecard recalculates too.
           '#ajax' => [
-            'callback' => '::ajaxRefreshPostFields',
-            'wrapper' => 'gc-upload-post-fields-wrapper',
+            'callback' => '::ajaxRefreshLoadedWrap',
+            'wrapper' => 'gc-upload-loaded-wrap',
             'event' => 'autocompleteclose',
             'progress' => ['type' => 'throbber'],
           ],
@@ -810,9 +815,10 @@ class GcUploadStartForm extends FormBase {
           '#title' => $this->t('Course'),
           '#options' => $course_options,
           '#default_value' => $selected_course_id,
+          // UPDATED: refresh the whole loaded_wrap so scorecard recalculates too.
           '#ajax' => [
-            'callback' => '::ajaxRefreshPostFields',
-            'wrapper' => 'gc-upload-post-fields-wrapper',
+            'callback' => '::ajaxRefreshLoadedWrap',
+            'wrapper' => 'gc-upload-loaded-wrap',
             'event' => 'change',
             'progress' => ['type' => 'throbber'],
           ],
@@ -823,9 +829,10 @@ class GcUploadStartForm extends FormBase {
           '#title' => $this->t('Tee'),
           '#options' => $tee_options,
           '#default_value' => $selected_tee_id,
+          // UPDATED: refresh the whole loaded_wrap so scorecard recalculates too.
           '#ajax' => [
-            'callback' => '::ajaxRefreshPostFields',
-            'wrapper' => 'gc-upload-post-fields-wrapper',
+            'callback' => '::ajaxRefreshLoadedWrap',
+            'wrapper' => 'gc-upload-loaded-wrap',
             'event' => 'change',
             'progress' => ['type' => 'throbber'],
           ],
@@ -1019,6 +1026,14 @@ class GcUploadStartForm extends FormBase {
   public function ajaxRefreshForm(array &$form, FormStateInterface $form_state) {
     $form_state->setRebuild(TRUE);
     return $form;
+  }
+
+  /**
+   * Refresh scorecard + post fields together (so pars/yards/hdcp + U/D recalc on tee/course changes).
+   */
+  public function ajaxRefreshLoadedWrap(array &$form, FormStateInterface $form_state) {
+    $form_state->setRebuild(TRUE);
+    return $form['rounds_wrapper']['loaded_wrap'];
   }
 
   public function ajaxRefreshPostFields(array &$form, FormStateInterface $form_state) {
