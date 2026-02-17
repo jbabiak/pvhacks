@@ -730,6 +730,12 @@ class GcUploadStartForm extends FormBase {
           'tee_color' => (string) ($form_state->getValue('grint_tee_name') ?? ''),
           'course_name' => (string) ($form_state->getValue('grint_course_name') ?? ''),
           'facility_name' => (string) ($form_state->getValue('grint_facility_name') ?? ''),
+
+          // IMPORTANT: pass GC selection ids so builder can load hole pars/yards/hdcp.
+          'gc_id' => (int) ($form_state->getValue('gc_id') ?? 0),
+          'gc_facility_id' => (int) ($form_state->getValue('gc_facility_id') ?? 0),
+          'gc_course_id' => (int) ($form_state->getValue('gc_course_id') ?? $form_state->getValue('course') ?? 0),
+          'gc_tee_id' => (int) ($form_state->getValue('gc_tee_id') ?? $form_state->getValue('tee') ?? 0),
         ];
 
         $section['loaded_wrap']['scorecard'] = $builder->buildScorecard($scores, $meta, $grint_uid);

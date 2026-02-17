@@ -548,4 +548,146 @@ class GolfCanadaApiService {
     }
   }
 
+  /**
+   * Return hole arrays (1..18) for a specific facility/course/tee selection.
+   * Uses getTeeHoles() as the source of truth.
+   *
+   * Output:
+   * [
+   *   'pars' => [0..17],
+   *   'yards' => [0..17],
+   *   'hdcp' => [0..17],
+   *   'par_out' => int|string,
+   *   'par_in' => int|string,
+   *   'par_total' => int|string,
+   *   'yards_out' => int|string,
+   *   'yards_in' => int|string,
+   *   'yards_total' => int|string,
+   * ]
+   */
+  public function getTeeHoleArrays(int $facilityId, int $memberId, int $courseId, int $teeId): array {
+    $holeMap = $this->getTeeHoles($facilityId, $memberId, $courseId, $teeId);
+    if (empty($holeMap)) {
+      return [];
+    }
+
+    $pars = array_fill(0, 18, '');
+    $yards = array_fill(0, 18, '');
+    $hdcp = array_fill(0, 18, '');
+
+    $parOut = 0; $parIn = 0; $parTotal = 0;
+    $yardsOut = 0; $yardsIn = 0; $yardsTotal = 0;
+
+    for ($h = 1; $h <= 18; $h++) {
+      $p = $holeMap[$h]['par'] ?? NULL;
+      $y = $holeMap[$h]['yards'] ?? NULL;
+      $hc = $holeMap[$h]['handicap'] ?? NULL;
+
+      $pars[$h - 1] = $p ?? '';
+      $yards[$h - 1] = $y ?? '';
+      $hdcp[$h - 1] = $hc ?? '';
+
+      if (is_numeric($p)) {
+        $parTotal += (int) $p;
+        if ($h <= 9) { $parOut += (int) $p; } else { $parIn += (int) $p; }
+      }
+      if (is_numeric($y)) {
+        $yardsTotal += (int) $y;
+        if ($h <= 9) { $yardsOut += (int) $y; } else { $yardsIn += (int) $y; }
+      }
+    }
+
+    return [
+      'pars' => $pars,
+      'yards' => $yards,
+      'hdcp' => $hdcp,
+      'par_out' => $parOut ?: '',
+      'par_in' => $parIn ?: '',
+      'par_total' => $parTotal ?: '',
+      'yards_out' => $yardsOut ?: '',
+      'yards_in' => $yardsIn ?: '',
+      'yards_total' => $yardsTotal ?: '',
+    ];
+  }
+
+  /**
+   * OPTIONAL quality-of-life:
+   * Try to match a GC course + tee from human-readable strings (ex: Grint names).
+   * You can use this later to auto-select course/tee.
+   *
+   * Returns:
+   * ['courseId'=>int, 'teeId'=>int, 'courseName'=>string, 'teeName'=>string] or []
+   */
+  public function matchCourseAndTee(int $facilityId, int $memberId, string $courseName, string $teeNameOrColor): array {
+    $courseName = $this->normalizeName($courseName);
+    $teeNameOrColor = $this->normalizeName($teeNameOrColor);
+
+    if ($facilityId <= 0 || $memberId <= 0 || $courseName === '') {
+      return [];
+    }
+
+    $courses = $this->getCourses($facilityId, $memberId);
+    if (empty($courses)) {
+      return [];
+    }
+
+    // 1) Find best-matching course (contains match).
+    $bestCourse = NULL;
+    foreach ($courses as $c) {
+      $n = $this->normalizeName((string) ($c['name'] ?? ''));
+      if ($n !== '' && ($n === $courseName || str_contains($n, $courseName) || str_contains($courseName, $n))) {
+        $bestCourse = $c;
+        break;
+      }
+    }
+    if (!$bestCourse) {
+      // fallback: first "contains" using partial tokens
+      foreach ($courses as $c) {
+        $n = $this->normalizeName((string) ($c['name'] ?? ''));
+        if ($n !== '' && $courseName !== '' && str_contains($courseName, $n)) {
+          $bestCourse = $c;
+          break;
+        }
+      }
+    }
+
+    if (!$bestCourse) {
+      return [];
+    }
+
+    $courseId = (int) ($bestCourse['id'] ?? 0);
+    $courseLabel = (string) ($bestCourse['name'] ?? '');
+
+    // 2) Find best-matching tee (contains match).
+    $bestTee = NULL;
+    $tees = $bestCourse['tees'] ?? [];
+    if (is_array($tees) && $teeNameOrColor !== '') {
+      foreach ($tees as $t) {
+        $tn = $this->normalizeName((string) ($t['name'] ?? ''));
+        if ($tn !== '' && (str_contains($tn, $teeNameOrColor) || str_contains($teeNameOrColor, $tn))) {
+          $bestTee = $t;
+          break;
+        }
+      }
+    }
+
+    if (!$bestTee) {
+      return []; // don’t guess wrong
+    }
+
+    return [
+      'courseId' => $courseId,
+      'teeId' => (int) ($bestTee['id'] ?? 0),
+      'courseName' => $courseLabel,
+      'teeName' => (string) ($bestTee['name'] ?? ''),
+    ];
+  }
+
+  protected function normalizeName(string $s): string {
+    $s = strtolower(trim($s));
+    $s = preg_replace('/\s+/', ' ', $s);
+    $s = preg_replace('/[^a-z0-9 ]/', '', $s);
+    return trim((string) $s);
+  }
+
 }

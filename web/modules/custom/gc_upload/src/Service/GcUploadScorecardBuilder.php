@@ -18,7 +18,6 @@ class GcUploadScorecardBuilder {
   }
 
   protected function log(string $message, array $context = []): void {
-    // Notice so it shows up in dblog more reliably.
     $this->logger->notice($message, $context);
   }
 
@@ -68,7 +67,6 @@ class GcUploadScorecardBuilder {
       "//*[@id='courseName'][1]",
     ]);
 
-    // If course_name begins with "(12345) ..." we can parse course_id.
     if ($meta['course_id'] === '' && $meta['course_name'] !== '') {
       $cid = $this->grintAPI->getCourseIdFromString($meta['course_name']);
       if (!empty($cid)) {
@@ -109,75 +107,234 @@ class GcUploadScorecardBuilder {
   }
 
   /**
-   * Build an editable 18-hole scorecard form section.
-   * - Scores come from $scores (blank if missing).
-   * - Putts come from $scores[*]['putts'] if present.
-   * - Course info comes from course_id + tee_color via Grint course data (if available).
+   * Convert Grint fir_code to Golf Canada enum string (for display/submit).
    */
-  public function buildScorecard(array $scores, array $meta = [], string $grint_user_id = ''): array {
-    $course_id = trim((string) ($meta['course_id'] ?? ''));
-    $tee_color = trim((string) ($meta['tee_color'] ?? ''));
-    $course_name = trim((string) ($meta['course_name'] ?? ''));
+  protected function firCodeToEnum(?string $code): string {
+    $code = trim((string) $code);
+    return match ($code) {
+      '1' => 'MissedLeft',
+      '2' => 'MissedRight',
+      '3' => 'Hit',
+      '4' => 'MissedShort',
+      '6' => 'MissedLong',
+      default => '',
+    };
+  }
 
-    // Pull course data when possible.
-    $course_data_clean = NULL;
-    if ($course_id !== '' && $tee_color !== '') {
-      $raw = $this->grintAPI->getCourseData($course_id, $tee_color, 18);
-      $course_data_clean = $this->grintAPI->processCourseData($raw);
-      $this->log('Course data clean keys: @keys', [
-        '@keys' => is_array($course_data_clean) ? implode(',', array_keys($course_data_clean)) : '',
-      ]);
+  /**
+   * Penalties in Grint are a text like "DOS" etc.
+   * We want:
+   * - remove S/s (sand is NOT a penalty in Golf Canada)
+   * - count remaining letters (D,O, etc) => integer
+   * - return '' if none
+   */
+  protected function penaltiesRawToCount(?string $raw): string {
+    $raw = trim((string) $raw);
+    if ($raw === '') {
+      return '';
     }
-    else {
-      $this->log('Missing course_id or tee_color; cannot call getCourseData. course_id=@cid tee=@tee', [
-        '@cid' => $course_id,
-        '@tee' => $tee_color,
-      ]);
+
+    $raw2 = preg_replace('/s/i', '', $raw);
+    $raw2 = strtoupper(trim((string) $raw2));
+    if ($raw2 === '') {
+      return '';
     }
 
-    // Optional: attempt course handicap (best-effort; not required for now).
-    $course_handicap = NULL;
-    try {
-      if ($grint_user_id !== '' && $course_id !== '' && $tee_color !== '') {
-        $hi = $this->grintAPI->getHandicapIndex($grint_user_id);
-        $ch = $this->grintAPI->getCourseHandicap($grint_user_id, $hi, $course_id, $tee_color);
-        $this->log('getCourseHandicap response: @resp', ['@resp' => print_r($ch, TRUE)]);
+    if (preg_match_all('/[A-Z]/', $raw2, $m)) {
+      $n = count($m[0]);
+      return $n > 0 ? (string) $n : '';
+    }
 
-        if (is_object($ch)) {
-          foreach (['course_handicap', 'courseHandicap', 'handicap', 'ch'] as $prop) {
-            if (isset($ch->$prop) && is_numeric($ch->$prop)) {
-              $course_handicap = (int) $ch->$prop;
-              break;
-            }
+    return '';
+  }
+
+  /**
+   * Count sand shots from the raw Grint penalty string (S, SS, DOS, etc).
+   */
+  protected function sandCountFromRaw(?string $raw): int {
+    $raw = strtoupper(trim((string) $raw));
+    if ($raw === '') {
+      return 0;
+    }
+    return substr_count($raw, 'S');
+  }
+
+  protected function toNullableInt($v): ?int {
+    if ($v === NULL) {
+      return NULL;
+    }
+    $s = trim((string) $v);
+    if ($s === '' || !is_numeric($s)) {
+      return NULL;
+    }
+    return (int) $s;
+  }
+
+  /**
+   * U/D rule (your example):
+   * - 1 putt AND gross <= par
+   */
+  protected function inferUpDown($par, $gross, $putts): bool {
+    $par_i = $this->toNullableInt($par);
+    $gross_i = $this->toNullableInt($gross);
+    $putts_i = $this->toNullableInt($putts);
+
+    if ($par_i === NULL || $gross_i === NULL || $putts_i === NULL) {
+      return FALSE;
+    }
+    return ($putts_i === 1) && ($gross_i <= $par_i);
+  }
+
+  /**
+   * Helper: find course/tee names from getCourses payload (for display).
+   */
+  protected function findGcCourseTeeNames(array $coursesPayload, int $courseId, int $teeId): array {
+    $out = ['course' => '', 'tee' => ''];
+    foreach ($coursesPayload as $c) {
+      if ((int) ($c['id'] ?? 0) !== $courseId) {
+        continue;
+      }
+      $out['course'] = (string) ($c['name'] ?? '');
+      $tees = $c['tees'] ?? [];
+      if (is_array($tees)) {
+        foreach ($tees as $t) {
+          if ((int) ($t['id'] ?? 0) === $teeId) {
+            $out['tee'] = (string) ($t['name'] ?? '');
+            break;
           }
         }
       }
+      break;
     }
-    catch (\Throwable $e) {
-      $this->log('Unable to compute course handicap (non-fatal): @msg', ['@msg' => $e->getMessage()]);
+    return $out;
+  }
+
+  /**
+   * Build an editable 18-hole scorecard form section.
+   */
+  public function buildScorecard(array $scores, array $meta = [], string $grint_user_id = ''): array {
+    // Grint display fallbacks.
+    $grint_course_name = trim((string) ($meta['course_name'] ?? ''));
+    $grint_tee_color = trim((string) ($meta['tee_color'] ?? ''));
+
+    // GC selection ids must be passed via $meta by the form.
+    $gc_member_id = (int) ($meta['gc_id'] ?? 0);
+    $gc_facility_id = (int) ($meta['gc_facility_id'] ?? 0);
+    $gc_course_id = (int) ($meta['gc_course_id'] ?? 0);
+    $gc_tee_id = (int) ($meta['gc_tee_id'] ?? 0);
+
+    // --------------------
+    // Hole pars/yards/hdcp FROM GOLF CANADA (source of truth)
+    // --------------------
+    $pars = array_fill(0, 18, '');
+    $yards = array_fill(0, 18, '');
+    $hdcp = array_fill(0, 18, '');
+
+    $par_out = '';
+    $par_in = '';
+    $par_total = '';
+
+    $yards_out = '';
+    $yards_in = '';
+    $yards_total = '';
+
+    // For header display (prefer GC names if available).
+    $display_course_name = $grint_course_name;
+    $display_tee_name = $grint_tee_color;
+
+    // GC course handicap (prefer GC).
+    $course_handicap = NULL;
+
+    $courses_payload = [];
+    if ($gc_member_id > 0 && $gc_facility_id > 0) {
+      try {
+        /** @var \Drupal\gc_api\Service\GolfCanadaApiService $gc */
+        $gc = \Drupal::service('gc_api.golf_canada_api_service');
+        $courses_payload = $gc->getCourses($gc_facility_id, $gc_member_id);
+      }
+      catch (\Throwable $e) {
+        $this->log('GC getCourses failed (non-fatal): @msg', ['@msg' => $e->getMessage()]);
+      }
     }
 
-    // Course arrays (blank if not available).
-    $pars = $course_data_clean['par']['hole_par'] ?? array_fill(0, 18, '');
-    $yards = $course_data_clean['yardage']['hole_yardage'] ?? array_fill(0, 18, '');
-    $hdcp = $course_data_clean['handicap']['hole_handicap'] ?? array_fill(0, 18, '');
+    if ($gc_member_id > 0 && $gc_facility_id > 0 && $gc_course_id > 0 && $gc_tee_id > 0) {
+      try {
+        /** @var \Drupal\gc_api\Service\GolfCanadaApiService $gc */
+        $gc = \Drupal::service('gc_api.golf_canada_api_service');
 
-    $par_out = $course_data_clean['par']['front_par'] ?? '';
-    $par_in = $course_data_clean['par']['back_par'] ?? '';
-    $par_total = $course_data_clean['par']['total_par'] ?? '';
+        // Names for display if we have payload.
+        if (!empty($courses_payload)) {
+          $names = $this->findGcCourseTeeNames($courses_payload, $gc_course_id, $gc_tee_id);
+          if ($names['course'] !== '') {
+            $display_course_name = $names['course'];
+          }
+          if ($names['tee'] !== '') {
+            $display_tee_name = $names['tee'];
+          }
+        }
 
-    $yards_out = $course_data_clean['yardage']['front_yardage'] ?? '';
-    $yards_in = $course_data_clean['yardage']['back_yardage'] ?? '';
-    $yards_total = $course_data_clean['yardage']['total_yardage'] ?? '';
+        // Hole arrays.
+        $holeArrays = $gc->getTeeHoleArrays($gc_facility_id, $gc_member_id, $gc_course_id, $gc_tee_id);
+        if (!empty($holeArrays)) {
+          $pars = $holeArrays['pars'] ?? $pars;
+          $yards = $holeArrays['yards'] ?? $yards;
+          $hdcp = $holeArrays['hdcp'] ?? $hdcp;
+
+          $par_out = $holeArrays['par_out'] ?? $par_out;
+          $par_in = $holeArrays['par_in'] ?? $par_in;
+          $par_total = $holeArrays['par_total'] ?? $par_total;
+
+          $yards_out = $holeArrays['yards_out'] ?? $yards_out;
+          $yards_in = $holeArrays['yards_in'] ?? $yards_in;
+          $yards_total = $holeArrays['yards_total'] ?? $yards_total;
+        }
+        else {
+          $this->log('GC tee hole arrays empty (facility=@f member=@m course=@c tee=@t)', [
+            '@f' => $gc_facility_id,
+            '@m' => $gc_member_id,
+            '@c' => $gc_course_id,
+            '@t' => $gc_tee_id,
+          ]);
+        }
+
+        // Course handicap from GC (your existing method).
+        // NOTE: your getCourseHandicap signature includes sub_course_id + tee_color,
+        // but it only really uses facilityId + individualId internally right now.
+        // We'll pass courseId and tee name as "best-effort".
+        $teeNameForMatch = $display_tee_name !== '' ? $display_tee_name : $grint_tee_color;
+        $ch = $gc->getCourseHandicap($gc_member_id, $gc_facility_id, $gc_course_id, $teeNameForMatch);
+        if (is_numeric($ch)) {
+          $course_handicap = (int) $ch;
+        }
+      }
+      catch (\Throwable $e) {
+        $this->log('GC hole load / handicap failed: @msg', ['@msg' => $e->getMessage()]);
+      }
+    }
+    else {
+      $this->log('GC ids missing; cannot load tee holes. member=@m facility=@f course=@c tee=@t', [
+        '@m' => $gc_member_id,
+        '@f' => $gc_facility_id,
+        '@c' => $gc_course_id,
+        '@t' => $gc_tee_id,
+      ]);
+    }
+
+    $fir_options = [
+      '' => '-',
+      'Hit' => '◎',
+      'MissedRight' => '▶',
+      'MissedLeft' => '◀',
+      'MissedShort' => '▼',
+      'MissedLong' => '▲',
+    ];
 
     $build = [
       '#type' => 'container',
       '#attributes' => ['class' => ['gc-upload-scorecard']],
       '#attached' => [
         'library' => [
-          // Your existing helper (keeps your score table behaviors if it relies on ids/classes).
           'hacks_forms/scorecard-helper',
-          // New module-specific styling/js.
           'gc_upload/scorecard',
         ],
       ],
@@ -187,32 +344,67 @@ class GcUploadScorecardBuilder {
       '#type' => 'markup',
       '#markup' =>
         '<div class="gc-upload-scores-info">'
-        . '<span>Course: <span id="user_course_name">' . htmlspecialchars($course_name ?: '(unknown)', ENT_QUOTES, 'UTF-8') . '</span></span>'
-        . '<span style="margin-left:10px;">Tee: <span id="user_course_tee_color">' . htmlspecialchars($tee_color ?: '(unknown)', ENT_QUOTES, 'UTF-8') . '</span></span>'
+        . '<span>Course: <span id="user_course_name">' . htmlspecialchars($display_course_name ?: '(unknown)', ENT_QUOTES, 'UTF-8') . '</span></span>'
+        . '<span style="margin-left:10px;">Tee: <span id="user_course_tee_color">' . htmlspecialchars($display_tee_name ?: '(unknown)', ENT_QUOTES, 'UTF-8') . '</span></span>'
         . '<span style="margin-left:10px;">Course Handicap: <span id="user_course_handicap">' . htmlspecialchars($course_handicap !== NULL ? (string) $course_handicap : '(unknown)', ENT_QUOTES, 'UTF-8') . '</span></span>'
         . '</div>',
     ];
 
-    // FRONT TABLE.
+    // -----------------------
+    // FRONT TABLE
+    // -----------------------
     $build['scores_table']['front'] = [
       '#type' => 'table',
       '#header' => ['Hole', '1','2','3','4','5','6','7','8','9','Out'],
       '#attributes' => ['class' => ['scorecard-table-input']],
     ];
+
     $build['scores_table']['front']['yards'][0] = ['#markup' => 'Yards'];
     $build['scores_table']['front']['hdcp'][0] = ['#markup' => 'Hdcp'];
     $build['scores_table']['front']['par'][0] = ['#markup' => 'Par'];
     $build['scores_table']['front']['score'][0] = ['#markup' => 'Score'];
     $build['scores_table']['front']['putts'][0] = ['#markup' => 'Putts'];
+    $build['scores_table']['front']['fir'][0] = ['#markup' => 'FIR'];
+    $build['scores_table']['front']['penalty'][0] = ['#markup' => 'Pen'];
+    $build['scores_table']['front']['updown'][0] = ['#markup' => 'U/D'];
+    $build['scores_table']['front']['sandsave'][0] = ['#markup' => 'Sand'];
 
     for ($i = 1; $i <= 9; $i++) {
       $hole = $i;
+
       $hole_score = isset($scores[$hole]['score']) ? (string) $scores[$hole]['score'] : '';
       $hole_putts = isset($scores[$hole]['putts']) ? (string) $scores[$hole]['putts'] : '';
 
+      $pen_raw = (string) ($scores[$hole]['penalties_raw'] ?? $scores[$hole]['pen_raw'] ?? $scores[$hole]['penalties'] ?? '');
+      $sand_from_raw = $this->sandCountFromRaw($pen_raw);
+
+      $sand_count = 0;
+      if (isset($scores[$hole]['sand_count']) && is_numeric($scores[$hole]['sand_count'])) {
+        $sand_count = (int) $scores[$hole]['sand_count'];
+      }
+      $sand_count = max($sand_count, $sand_from_raw);
+
+      $fir_code = isset($scores[$hole]['fir_code']) ? (string) $scores[$hole]['fir_code'] : '';
+
+      $par = $pars[$hole - 1] ?? '';
+      $default_fir = $this->firCodeToEnum($fir_code);
+      $default_pen = $this->penaltiesRawToCount($pen_raw);
+
+      $infer_updown = $this->inferUpDown($par, $hole_score, $hole_putts);
+      $infer_sand = ($sand_count > 0);
+
+      // Debug so we can prove pars are present.
+      $this->log('UD hole @h: par=@par gross=@g putts=@p => ud=@ud', [
+        '@h' => (string) $hole,
+        '@par' => (string) $par,
+        '@g' => (string) $hole_score,
+        '@p' => (string) $hole_putts,
+        '@ud' => $infer_updown ? '1' : '0',
+      ]);
+
       $build['scores_table']['front']['yards'][$i] = ['#markup' => $yards[$hole - 1] ?? ''];
       $build['scores_table']['front']['hdcp'][$i] = ['#markup' => $hdcp[$hole - 1] ?? ''];
-      $build['scores_table']['front']['par'][$i] = ['#markup' => $pars[$hole - 1] ?? ''];
+      $build['scores_table']['front']['par'][$i] = ['#markup' => $par];
 
       $build['scores_table']['front']['score'][$i] = [
         '#type' => 'textfield',
@@ -239,6 +431,53 @@ class GcUploadScorecardBuilder {
         ],
         '#default_value' => $hole_putts,
       ];
+
+      if (is_numeric($par) && (int) $par === 3) {
+        $build['scores_table']['front']['fir'][$i] = ['#markup' => '—'];
+      }
+      else {
+        $build['scores_table']['front']['fir'][$i] = [
+          '#type' => 'select',
+          '#options' => $fir_options,
+          '#default_value' => $default_fir !== '' ? $default_fir : '',
+          '#attributes' => [
+            'class' => ['gc-upload-fir-input'],
+            'data-hole' => (string) $hole,
+          ],
+        ];
+      }
+
+      $build['scores_table']['front']['penalty'][$i] = [
+        '#type' => 'textfield',
+        '#size' => 1,
+        '#required' => FALSE,
+        '#attributes' => [
+          'pattern' => '[0-9]*',
+          'min' => '0',
+          'class' => ['gc-upload-penalty-input'],
+          'data-hole' => (string) $hole,
+        ],
+        '#default_value' => $default_pen,
+      ];
+
+      // IMPORTANT: checkbox defaults should be 0/1.
+      $build['scores_table']['front']['updown'][$i] = [
+        '#type' => 'checkbox',
+        '#default_value' => $infer_updown ? 1 : 0,
+        '#attributes' => [
+          'class' => ['gc-upload-updown-input'],
+          'data-hole' => (string) $hole,
+        ],
+      ];
+
+      $build['scores_table']['front']['sandsave'][$i] = [
+        '#type' => 'checkbox',
+        '#default_value' => $infer_sand ? 1 : 0,
+        '#attributes' => [
+          'class' => ['gc-upload-sandsave-input'],
+          'data-hole' => (string) $hole,
+        ],
+      ];
     }
 
     $build['scores_table']['front']['yards'][10] = ['#markup' => $yards_out];
@@ -246,27 +485,65 @@ class GcUploadScorecardBuilder {
     $build['scores_table']['front']['par'][10] = ['#markup' => $par_out];
     $build['scores_table']['front']['score'][10] = ['#markup' => '<span id="scores_table_front_score">0</span>'];
     $build['scores_table']['front']['putts'][10] = ['#markup' => '<span id="scores_table_front_putts">0</span>'];
+    $build['scores_table']['front']['fir'][10] = ['#markup' => ''];
+    $build['scores_table']['front']['penalty'][10] = ['#markup' => ''];
+    $build['scores_table']['front']['updown'][10] = ['#markup' => ''];
+    $build['scores_table']['front']['sandsave'][10] = ['#markup' => ''];
 
-    // BACK TABLE.
+    // -----------------------
+    // BACK TABLE
+    // -----------------------
     $build['scores_table']['back'] = [
       '#type' => 'table',
       '#header' => ['Hole', '10','11','12','13','14','15','16','17','18','In'],
       '#attributes' => ['class' => ['scorecard-table-input']],
     ];
+
     $build['scores_table']['back']['yards'][0] = ['#markup' => 'Yards'];
     $build['scores_table']['back']['hdcp'][0] = ['#markup' => 'Hdcp'];
     $build['scores_table']['back']['par'][0] = ['#markup' => 'Par'];
     $build['scores_table']['back']['score'][0] = ['#markup' => 'Score'];
     $build['scores_table']['back']['putts'][0] = ['#markup' => 'Putts'];
+    $build['scores_table']['back']['fir'][0] = ['#markup' => 'FIR'];
+    $build['scores_table']['back']['penalty'][0] = ['#markup' => 'Pen'];
+    $build['scores_table']['back']['updown'][0] = ['#markup' => 'U/D'];
+    $build['scores_table']['back']['sandsave'][0] = ['#markup' => 'Sand'];
 
     for ($i = 1; $i <= 9; $i++) {
       $hole = $i + 9;
+
       $hole_score = isset($scores[$hole]['score']) ? (string) $scores[$hole]['score'] : '';
       $hole_putts = isset($scores[$hole]['putts']) ? (string) $scores[$hole]['putts'] : '';
 
+      $pen_raw = (string) ($scores[$hole]['penalties_raw'] ?? $scores[$hole]['pen_raw'] ?? $scores[$hole]['penalties'] ?? '');
+      $sand_from_raw = $this->sandCountFromRaw($pen_raw);
+
+      $sand_count = 0;
+      if (isset($scores[$hole]['sand_count']) && is_numeric($scores[$hole]['sand_count'])) {
+        $sand_count = (int) $scores[$hole]['sand_count'];
+      }
+      $sand_count = max($sand_count, $sand_from_raw);
+
+      $fir_code = isset($scores[$hole]['fir_code']) ? (string) $scores[$hole]['fir_code'] : '';
+
+      $par = $pars[$hole - 1] ?? '';
+      $default_fir = $this->firCodeToEnum($fir_code);
+      $default_pen = $this->penaltiesRawToCount($pen_raw);
+
+      $infer_updown = $this->inferUpDown($par, $hole_score, $hole_putts);
+      $infer_sand = ($sand_count > 0);
+
+      $this->log('UD hole @h: par=@par gross=@g putts=@p => ud=@ud', [
+        '@h' => (string) $hole,
+        '@par' => (string) $par,
+        '@g' => (string) $hole_score,
+        '@p' => (string) $hole_putts,
+        '@ud' => $infer_updown ? '1' : '0',
+      ]);
+
       $build['scores_table']['back']['yards'][$i] = ['#markup' => $yards[$hole - 1] ?? ''];
       $build['scores_table']['back']['hdcp'][$i] = ['#markup' => $hdcp[$hole - 1] ?? ''];
-      $build['scores_table']['back']['par'][$i] = ['#markup' => $pars[$hole - 1] ?? ''];
+      $build['scores_table']['back']['par'][$i] = ['#markup' => $par];
 
       $build['scores_table']['back']['score'][$i] = [
         '#type' => 'textfield',
@@ -293,6 +570,52 @@ class GcUploadScorecardBuilder {
         ],
         '#default_value' => $hole_putts,
       ];
+
+      if (is_numeric($par) && (int) $par === 3) {
+        $build['scores_table']['back']['fir'][$i] = ['#markup' => '—'];
+      }
+      else {
+        $build['scores_table']['back']['fir'][$i] = [
+          '#type' => 'select',
+          '#options' => $fir_options,
+          '#default_value' => $default_fir !== '' ? $default_fir : '',
+          '#attributes' => [
+            'class' => ['gc-upload-fir-input'],
+            'data-hole' => (string) $hole,
+          ],
+        ];
+      }
+
+      $build['scores_table']['back']['penalty'][$i] = [
+        '#type' => 'textfield',
+        '#size' => 1,
+        '#required' => FALSE,
+        '#attributes' => [
+          'pattern' => '[0-9]*',
+          'min' => '0',
+          'class' => ['gc-upload-penalty-input'],
+          'data-hole' => (string) $hole,
+        ],
+        '#default_value' => $default_pen,
+      ];
+
+      $build['scores_table']['back']['updown'][$i] = [
+        '#type' => 'checkbox',
+        '#default_value' => $infer_updown ? 1 : 0,
+        '#attributes' => [
+          'class' => ['gc-upload-updown-input'],
+          'data-hole' => (string) $hole,
+        ],
+      ];
+
+      $build['scores_table']['back']['sandsave'][$i] = [
+        '#type' => 'checkbox',
+        '#default_value' => $infer_sand ? 1 : 0,
+        '#attributes' => [
+          'class' => ['gc-upload-sandsave-input'],
+          'data-hole' => (string) $hole,
+        ],
+      ];
     }
 
     $build['scores_table']['back']['yards'][10] = ['#markup' => $yards_in];
@@ -300,8 +623,14 @@ class GcUploadScorecardBuilder {
     $build['scores_table']['back']['par'][10] = ['#markup' => $par_in];
     $build['scores_table']['back']['score'][10] = ['#markup' => '<span id="scores_table_back_score">0</span>'];
     $build['scores_table']['back']['putts'][10] = ['#markup' => '<span id="scores_table_back_putts">0</span>'];
+    $build['scores_table']['back']['fir'][10] = ['#markup' => ''];
+    $build['scores_table']['back']['penalty'][10] = ['#markup' => ''];
+    $build['scores_table']['back']['updown'][10] = ['#markup' => ''];
+    $build['scores_table']['back']['sandsave'][10] = ['#markup' => ''];
 
-    // TOTALS TABLE (simple for now).
+    // -----------------------
+    // TOTALS TABLE
+    // -----------------------
     $build['scores_table']['total'] = [
       '#type' => 'table',
       '#header' => ['Gross Score', 'Par', 'Yards', 'Total Putts'],
@@ -311,7 +640,7 @@ class GcUploadScorecardBuilder {
     $grossScore = 0;
     $totalPutts = 0;
 
-    foreach ($scores as $hole => $data) {
+    foreach ($scores as $holeNum => $data) {
       if (isset($data['score']) && is_numeric($data['score'])) {
         $grossScore += (int) $data['score'];
       }

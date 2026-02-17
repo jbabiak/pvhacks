@@ -26,7 +26,7 @@ class Grint_API_Service {
     $this->state = $state;
     $this->client = new Client([
       'base_uri' => 'https://www.thegrint.com',
-      'cookies' => true, // Enable cookie jar
+      'cookies' => true,
       'headers' => [
         'Content-Type' => 'application/x-www-form-urlencoded'
       ]
@@ -41,7 +41,6 @@ class Grint_API_Service {
         'password' => Settings::get('grint_api.settings')['password'],
       ]
     ]);
-
     return $response;
   }
 
@@ -52,16 +51,14 @@ class Grint_API_Service {
 
     $clean = trim($index->index_ghap, "~");
 
-    // Match the first number: integer or float
     if (preg_match('/\d+(\.\d+)?/', $clean, $matches)) {
       $index_ghap = (float) $matches[0];
     }
 
     if (strpos($index_ghap, '+') === 0) {
-      // Remove the '+' and convert to decimal
       $hdcp = -floatval(substr($index_ghap, 1));
-    } else {
-      // Convert to decimal and make it negative
+    }
+    else {
       $hdcp = floatval($index_ghap);
     }
     return $hdcp;
@@ -99,8 +96,7 @@ class Grint_API_Service {
 
   public function getCourseIdFromString($string) {
     if (preg_match('/^\((\d+)\)/', $string, $matches)) {
-      $number = $matches[1];
-      return $number;
+      return $matches[1];
     }
     return 0;
   }
@@ -115,28 +111,22 @@ class Grint_API_Service {
     $teeHTML = $this->postRequestHTML($uri, $payload);
 
     $dom = new DOMDocument();
-    libxml_use_internal_errors(true); // Disable warnings for invalid HTML
+    libxml_use_internal_errors(true);
     $dom->loadHTML($teeHTML);
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
-
     $options = $xpath->query('//option[@class="option-tee"]');
 
     $results = [];
     foreach ($options as $option) {
       $value = $option->getAttribute('value');
-      $lr = $option->getAttribute('lr');
-      $ls = $option->getAttribute('ls');
-      $mr = $option->getAttribute('mr');
-      $ms = $option->getAttribute('ms');
-
       $results[$value] = [
         'value' => $value,
-        'lr' => $lr,
-        'ls' => $ls,
-        'mr' => $mr,
-        'ms' => $ms
+        'lr' => $option->getAttribute('lr'),
+        'ls' => $option->getAttribute('ls'),
+        'mr' => $option->getAttribute('mr'),
+        'ms' => $option->getAttribute('ms'),
       ];
     }
 
@@ -176,7 +166,7 @@ class Grint_API_Service {
       'user_hdcp' => $user_hdcp,
       'course_id' => $course_id,
       'tee' => $tee_color,
-      'provider' => 7, //7 = ghap, 3 = whs
+      'provider' => 7,
     ];
     return $this->postRequest($uri, $payload);
   }
@@ -192,8 +182,12 @@ class Grint_API_Service {
   }
 
   /**
-   * Internal: parse the Grint review_score HTML using your existing selectors/attributes.
-   * DO NOT change behavior here (keeps 18-hole working).
+   * Internal: parse the Grint review_score HTML.
+   * Extends behavior:
+   * - score
+   * - putts
+   * - penalties_raw + sand_count
+   * - fir_code
    */
   protected function parseRoundScoreHtml(string $htmlContent): array {
     $dom = new DOMDocument();
@@ -202,65 +196,114 @@ class Grint_API_Service {
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
+    $scores = [];
 
+    // Scores
     $scoreQuery = "//table[contains(@class, 'user-input score')]//input[contains(@class, 'input-score-field')]";
     $scoreInputs = $xpath->query($scoreQuery);
 
-    $scores = [];
-
     if ($scoreInputs) {
       foreach ($scoreInputs as $input) {
-        $holeNumber = $input->getAttribute('data-hole');
+        $holeNumber = (int) $input->getAttribute('data-hole');
+        if ($holeNumber < 1 || $holeNumber > 18) {
+          continue;
+        }
         $scoreValue = $input->getAttribute('data-value');
-
-        // Initialize the array for this hole
         $scores[$holeNumber] = [
-          'hole' => $holeNumber,
-          'score' => $scoreValue
+          'hole' => (string) $holeNumber,
+          'score' => $scoreValue,
         ];
       }
     }
 
-    // Now, find all input elements for putts
-    $puttsQuery = "//table[contains(@class, 'user-input optional')]//input[contains(@class, 'input-score-field')]";
+    // Putts
+    $puttsQuery = "//table[contains(@class, 'user-input optional')]//tr[contains(@class,'input-putts')]//input[contains(@class, 'input-score-field')]";
     $puttsInputs = $xpath->query($puttsQuery);
 
     if ($puttsInputs) {
       foreach ($puttsInputs as $input) {
-        $holeNumber = $input->getAttribute('data-hole');
+        $holeNumber = (int) $input->getAttribute('data-hole');
+        if ($holeNumber < 1 || $holeNumber > 18) {
+          continue;
+        }
         $puttsValue = $input->getAttribute('value');
 
-        if (isset($scores[$holeNumber])) {
-          $scores[$holeNumber]['putts'] = $puttsValue;
+        if (!isset($scores[$holeNumber])) {
+          $scores[$holeNumber] = ['hole' => (string) $holeNumber];
         }
+        $scores[$holeNumber]['putts'] = $puttsValue;
+      }
+    }
+
+    // Penalties + Sand count (FIXED)
+    $penQuery = "//table[contains(@class,'user-input optional')]//tr[contains(@class,'input-penalties')]//input[@data-hole]";
+    $penInputs = $xpath->query($penQuery);
+
+    if ($penInputs) {
+      foreach ($penInputs as $input) {
+        $holeNumber = (int) $input->getAttribute('data-hole');
+        if ($holeNumber < 1 || $holeNumber > 18) {
+          continue;
+        }
+
+        $raw = trim((string) $input->getAttribute('value'));
+
+        // FIX: preg_match_all MUST receive the subject string.
+        $sandCount = 0;
+        if ($raw !== '') {
+          $sandCount = preg_match_all('/s/i', $raw, $m) ?: 0;
+        }
+
+        if (!isset($scores[$holeNumber])) {
+          $scores[$holeNumber] = ['hole' => (string) $holeNumber];
+        }
+
+        $scores[$holeNumber]['penalties_raw'] = $raw;
+        $scores[$holeNumber]['sand_count'] = $sandCount;
+      }
+    }
+
+    // FIR / Tee Accuracy
+    $firQuery = "//table[contains(@class,'user-input optional')]//tr[contains(@class,'input-facc')]//input[@type='hidden' and starts-with(@name,'fH')]";
+    $firInputs = $xpath->query($firQuery);
+
+    if ($firInputs) {
+      foreach ($firInputs as $input) {
+        $name = (string) $input->getAttribute('name'); // fH4
+        $val = trim((string) $input->getAttribute('value'));
+
+        if (!preg_match('/^fH(\d{1,2})$/', $name, $m)) {
+          continue;
+        }
+        $holeNumber = (int) $m[1];
+        if ($holeNumber < 1 || $holeNumber > 18) {
+          continue;
+        }
+
+        if (!isset($scores[$holeNumber])) {
+          $scores[$holeNumber] = ['hole' => (string) $holeNumber];
+        }
+        $scores[$holeNumber]['fir_code'] = $val;
       }
     }
 
     return $scores;
   }
 
-  /**
-   * FIXED: Keep 18-hole behavior unchanged, add 9-hole URL support.
-   * - First try: /score/review_score/{id}
-   * - If it yields no score inputs, try: /score/review_score/{id}/9
-   */
   public function getRoundScore($roundId = 0) {
     $roundId = (int) $roundId;
     if ($roundId <= 0) {
       return [];
     }
 
-    // 1) Normal (18-hole) URL — keep as-is.
     $uri = '/score/review_score/' . $roundId;
     $htmlContent = $this->getRequest($uri);
     $scores = $this->parseRoundScoreHtml((string) $htmlContent);
 
-    // If we got anything at all, return it (this preserves existing behavior).
     if (!empty($scores)) {
       return $scores;
     }
 
-    // 2) 9-hole URL variant.
     $uri9 = '/score/review_score/' . $roundId . '/9';
     $htmlContent9 = $this->getRequest($uri9);
     $scores9 = $this->parseRoundScoreHtml((string) $htmlContent9);
@@ -268,11 +311,6 @@ class Grint_API_Service {
     return $scores9;
   }
 
-  /**
-   * UPDATED: Supports Grint feed paging.
-   * - No wave => latest rounds (backward compatible)
-   * - wave 1/2/3... => older pages
-   */
   public function getRoundFeed($user_id = 1597150, $wave = NULL) {
     $uri = '/newsfeed_util/loadActivityFriend';
     $payload = [
@@ -288,13 +326,11 @@ class Grint_API_Service {
 
   public function processHandicap($handicap_html){
     $dom = new DOMDocument;
-    libxml_use_internal_errors(true); // Disable warnings for invalid HTML
+    libxml_use_internal_errors(true);
     $dom->loadHTML($handicap_html);
     libxml_clear_errors();
-    // Create a new DOMXPath instance for the DOMDocument
+
     $xpath = new DOMXPath($dom);
-    // XPath query to select all 'td' elements with class 'data-entry section-in'
-    $query = "//td[contains(@class, 'data-entry') and contains(@class, 'section-in')]";
     $querySectionOut = "//td[contains(@class, 'data-entry') and contains(@class, 'section-out')]";
     $querySectionIn = "//td[contains(@class, 'data-entry') and contains(@class, 'section-in')]";
 
@@ -302,7 +338,6 @@ class Grint_API_Service {
     $sectionInValues = $this->extractValues($xpath, $querySectionIn);
 
     $combinedValues['hole_handicap'] = array_merge($sectionOutValues, $sectionInValues);
-
     return $combinedValues;
   }
 
@@ -375,9 +410,9 @@ class Grint_API_Service {
     return $values;
   }
 
-  // Function to extract a single value
   function extractSingleValue($xpath, $query) {
     $entry = $xpath->query($query)->item(0);
     return $entry ? trim($entry->textContent) : null;
   }
+
 }
