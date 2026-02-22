@@ -4,4 +4,4 @@ gc_upload.start:
     _form: '\Drupal\gc_upload\Form\GcUploadStartForm'
     _title: 'Upload Scorecard'
   requirements:
-    _permission: 'access content'
+    _role: 'authenticated'
